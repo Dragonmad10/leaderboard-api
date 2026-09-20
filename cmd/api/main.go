@@ -1,80 +1,43 @@
 package main
 
 import (
-	"net/http"
-
+	"github.com/Dragonmad10/leaderboard-api/internal/handler/http"
+	"github.com/Dragonmad10/leaderboard-api/internal/repository/redis_repo"
+	"github.com/Dragonmad10/leaderboard-api/internal/service"
 	"github.com/gin-gonic/gin"
+	"github.com/redis/go-redis/v9"
 )
 
-// --- BASE DE DATOS FAKE (En memoria) ---
-// Usamos un mapa para simular Redis. Clave: userID, Valor: Puntuación
-var fakeDB = make(map[string]int)
-
-// --- ESTRUCTURAS DE DATOS ---
-// Así le decimos a Go qué formato tiene el JSON que nos envía el usuario
-type ScoreRequest struct {
-	UserID string `json:"user_id" binding:"required"`
-	Score  int    `json:"score" binding:"required"`
-}
-
 func main() {
-	// 1. Inicializamos el router (el motor que gestiona las URLs)
-	r := gin.Default()
-
-	// 2. Creamos un grupo de rutas para la v1 de tu API
-	v1 := r.Group("/api/v1")
-	{
-		// Endpoint de prueba para saber si el servidor está vivo
-		v1.GET("/ping", func(c *gin.Context) {
-			c.JSON(http.StatusOK, gin.H{"mensaje": "¡El servidor funciona!"})
-		})
-
-		// Endpoint para añadir una puntuación (POST)
-		v1.POST("/leaderboards/:id/scores", addScore)
-
-		// Endpoint para ver el ranking (GET)
-		v1.GET("/leaderboards/:id/top", getTopScores)
-	}
-
-	// 3. Arrancamos el servidor en el puerto 8080
-	r.Run(":8080")
-}
-
-// --- CONTROLADORES (Endpoints) ---
-
-// addScore recibe el JSON y guarda la puntuación
-func addScore(c *gin.Context) {
-	// Obtenemos el ID del leaderboard de la URL (ej: /leaderboards/global/scores)
-	leaderboardID := c.Param("id")
-
-	var req ScoreRequest
-	// c.ShouldBindJSON lee el JSON del body y lo mete en la variable 'req'
-	if err := c.ShouldBindJSON(&req); err != nil {
-		c.JSON(http.StatusBadRequest, gin.H{"error": "JSON inválido o faltan datos"})
-		return
-	}
-
-	// Guardamos en nuestra base de datos "fake"
-	// En el futuro, aquí irá tu código de Redis: redisClient.ZAdd(...)
-	fakeDB[req.UserID] = req.Score
-
-	// Respondemos al cliente que todo ha ido bien
-	c.JSON(http.StatusOK, gin.H{
-		"mensaje":        "Puntuación guardada",
-		"leaderboard_id": leaderboardID,
-		"user_id":        req.UserID,
-		"score":          req.Score,
+	// 1. Inicializar la conexión a Redis (La infraestructura)
+	rdb := redis.NewClient(&redis.Options{
+		Addr: "localhost:6379",
 	})
-}
 
-// getTopScores devuelve todas las puntuaciones guardadas
-func getTopScores(c *gin.Context) {
-	leaderboardID := c.Param("id")
+	// 2. Crear el Repositorio inyectándole el cliente de Redis
+	// Aquí repo es de tipo domain.LeaderboardRepository
+	repo := redis_repo.NewLeaderboardRepository(rdb)
 
-	// En el futuro, aquí harás un ZREVRANGE en Redis.
-	// Por ahora, simplemente devolvemos todo el mapa.
-	c.JSON(http.StatusOK, gin.H{
-		"leaderboard_id": leaderboardID,
-		"ranking":        fakeDB,
+	// 3. Crear el Servicio inyectándole el Repositorio
+	// Aquí svc es de tipo domain.LeaderboardService
+	svc := service.NewLeaderboardService(repo)
+
+	// 4. Crear el Handler inyectándole el Servicio
+	handler := http.NewLeaderboardHandler(svc)
+
+	// 5. Configurar Gin y las rutas (El servidor web)
+	router := gin.Default()
+	router.GET("/", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "Home page"})
 	})
+	router.GET("/api/v1/leaderboards/", func(c *gin.Context) {
+		c.JSON(200, gin.H{"message": "Leaderboard API is running"})
+	})
+	router.POST("/api/v1/leaderboards/:id/scores", handler.SubmitScore)
+	router.GET("/api/v1/leaderboards/:id/scores", handler.GetTopScores)
+	router.GET("/api/v1/leaderboards/:id/rank", handler.GetRank)
+	router.DELETE("/api/v1/leaderboards/:id/scores/:user_id", handler.RemoveUserScore)
+
+	// 6. Levantar el servidor
+	router.Run(":8080")
 }
