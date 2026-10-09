@@ -9,19 +9,22 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// RateLimiter returns a Gin middleware that enforces rate limits per client IP.
+// Uses sliding window algorithm via Redis (fail-open: allows requests if Redis is down).
+// Injects standard rate limit headers (RFC 6585 / IETF Draft).
 func RateLimiter(service domain.RateLimiterService, limit int64, window time.Duration) gin.HandlerFunc {
 	return func(c *gin.Context) {
-		// Identificador único por IP del cliente (ampliable a API Key o Bearer Token)
+		// Identify client by IP (can be extended to API Key or Bearer Token)
 		clientIP := c.ClientIP()
 
 		result, err := service.CheckLimit(c.Request.Context(), clientIP, limit, window)
 		if err != nil {
-			// En producción Tier 1, si Redis falla se adopta una política "fail-open" para no bloquear usuarios
+			// Fail-open: if Redis fails, allow request to not block legitimate users
 			c.Next()
 			return
 		}
 
-		// Inyección de cabeceras RFC 6585 / IETF Draft
+		// Inject standard rate limit headers
 		c.Header("X-RateLimit-Limit", strconv.FormatInt(result.Limit, 10))
 		c.Header("X-RateLimit-Remaining", strconv.FormatInt(result.Remaining, 10))
 		c.Header("X-RateLimit-Reset", strconv.FormatInt(int64(result.ResetIn.Seconds()), 10))
@@ -30,7 +33,7 @@ func RateLimiter(service domain.RateLimiterService, limit int64, window time.Dur
 			c.Header("Retry-After", strconv.FormatInt(int64(result.ResetIn.Seconds()), 10))
 			c.AbortWithStatusJSON(http.StatusTooManyRequests, gin.H{
 				"error":    "Too Many Requests",
-				"message":  "Ha excedido el límite de peticiones permitido. Intente de nuevo más tarde.",
+				"message":  "Rate limit exceeded. Please try again later.",
 				"retry_in": result.ResetIn.String(),
 			})
 			return

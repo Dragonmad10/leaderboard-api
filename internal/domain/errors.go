@@ -6,24 +6,24 @@ import (
 )
 
 var (
-	// ErrNotFound indica que un recurso no existe (usuario, leaderboard, score)
+	// ErrNotFound indicates a resource was not found (user, leaderboard, score)
 	ErrNotFound = errors.New("resource not found")
 
-	// ErrInvalidInput indica datos de entrada inválidos
+	// ErrInvalidInput indicates invalid input data
 	ErrInvalidInput = errors.New("invalid input")
 
-	// ErrConflict indica un conflicto (ej. duplicado)
+	// ErrConflict indicates a conflict (e.g., duplicate resource)
 	ErrConflict = errors.New("conflict")
 
-	// ErrInternal indica un error interno del servidor
+	// ErrInternal indicates an internal server error
 	ErrInternal = errors.New("internal server error")
 )
 
-// AppError es un error con código HTTP asociado
+// AppError wraps an error with an associated HTTP status code.
 type AppError struct {
-	Code    int
-	Message string
-	Err     error
+	Code    int    // HTTP status code
+	Message string // User-facing error message
+	Err     error  // Underlying error for debugging
 }
 
 func (e *AppError) Error() string {
@@ -37,27 +37,28 @@ func (e *AppError) Unwrap() error {
 	return e.Err
 }
 
-// NewNotFoundError crea un error 404
+// NewNotFoundError creates a 404 Not Found error.
 func NewNotFoundError(message string, err error) *AppError {
 	return &AppError{Code: 404, Message: message, Err: err}
 }
 
-// NewInvalidInputError crea un error 400
+// NewInvalidInputError creates a 400 Bad Request error.
 func NewInvalidInputError(message string, err error) *AppError {
 	return &AppError{Code: 400, Message: message, Err: err}
 }
 
-// NewConflictError crea un error 409
+// NewConflictError creates a 409 Conflict error.
 func NewConflictError(message string, err error) *AppError {
 	return &AppError{Code: 409, Message: message, Err: err}
 }
 
-// NewInternalError crea un error 500
+// NewInternalError creates a 500 Internal Server Error.
 func NewInternalError(message string, err error) *AppError {
 	return &AppError{Code: 500, Message: message, Err: err}
 }
 
-// GetErrorCode extrae el código HTTP de un error
+// GetErrorCode extracts the HTTP status code from an error.
+// Returns 500 if the error is not an AppError.
 func GetErrorCode(err error) int {
 	var appErr *AppError
 	if errors.As(err, &appErr) {
@@ -66,7 +67,8 @@ func GetErrorCode(err error) int {
 	return 500
 }
 
-// GetErrorMessage extrae el mensaje de un error
+// GetErrorMessage extracts the user-facing message from an error.
+// Returns "Internal server error" if the error is not an AppError.
 func GetErrorMessage(err error) string {
 	var appErr *AppError
 	if errors.As(err, &appErr) {

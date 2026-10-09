@@ -8,6 +8,8 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
+// Recovery returns a Gin middleware that recovers from panics.
+// Logs the panic with stack trace and returns a generic 500 error response.
 func Recovery() gin.HandlerFunc {
 	return func(c *gin.Context) {
 		defer func() {

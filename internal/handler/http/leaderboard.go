@@ -7,17 +7,18 @@ import (
 	"github.com/gin-gonic/gin"
 )
 
-// LeaderboardHandler es el equivalente a un [ApiController] en C#
+// LeaderboardHandler handles HTTP requests for leaderboard operations.
+// Analogous to an ApiController in C# / Controller in Spring Boot.
 type LeaderboardHandler struct {
 	svc domain.LeaderboardService
 }
 
-// Constructor del Handler
+// NewLeaderboardHandler creates a new handler with the given service.
 func NewLeaderboardHandler(svc domain.LeaderboardService) *LeaderboardHandler {
 	return &LeaderboardHandler{svc: svc}
 }
 
-// handleError convierte errores de dominio a respuestas HTTP apropiadas
+// handleError converts domain errors to appropriate HTTP responses.
 func handleError(c *gin.Context, err error, defaultMsg string) {
 	code := domain.GetErrorCode(err)
 	msg := domain.GetErrorMessage(err)
@@ -27,7 +28,10 @@ func handleError(c *gin.Context, err error, defaultMsg string) {
 	c.JSON(code, gin.H{"error": msg})
 }
 
-// SubmitScore maneja el POST /api/v1/leaderboards/:id/scores
+// SubmitScore handles POST /api/v1/leaderboards/:id/scores
+// Submits an absolute score for a user in a leaderboard.
+// Request body: { "user_id": "string", "score": float64 }
+// Response: 201 Created on success, 400 on validation error, 500 on server error
 func (h *LeaderboardHandler) SubmitScore(c *gin.Context) {
 	leaderboardID := c.Param("id")
 
@@ -50,7 +54,10 @@ func (h *LeaderboardHandler) SubmitScore(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "score updated successfully"})
 }
 
-// IncrementScore maneja el POST /api/v1/leaderboards/:id/scores/increment
+// IncrementScore handles POST /api/v1/leaderboards/:id/scores/increment
+// Increments a user's score by a delta value (can be positive or negative).
+// Request body: { "user_id": "string", "delta": int64 }
+// Response: 200 OK with new score, 400 on validation error, 500 on server error
 func (h *LeaderboardHandler) IncrementScore(c *gin.Context) {
 	leaderboardID := c.Param("id")
 
@@ -73,7 +80,8 @@ func (h *LeaderboardHandler) IncrementScore(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user_id": req.UserID, "new_score": newScore})
 }
 
-// parseIntQuery parsea un parámetro de query string a int, retorna 0 si inválido
+// parseIntQuery parses a query string parameter to int.
+// Returns (0, false) if the string is empty or contains non-digit characters.
 func parseIntQuery(s string) (int, bool) {
 	if s == "" {
 		return 0, false
@@ -88,6 +96,12 @@ func parseIntQuery(s string) (int, bool) {
 	return parsed, true
 }
 
+// GetTopScores handles GET /api/v1/leaderboards/:id/scores
+// Returns paginated top scores for a leaderboard.
+// Query parameters:
+//   - limit: number of results to return (default: 10, max: 100)
+//   - offset: number of results to skip for pagination (default: 0)
+// Response: 200 OK with array of UserScore, 400 on invalid params, 500 on server error
 func (h *LeaderboardHandler) GetTopScores(c *gin.Context) {
 	leaderboardID := c.Param("id")
 
@@ -120,6 +134,10 @@ func (h *LeaderboardHandler) GetTopScores(c *gin.Context) {
 	c.JSON(http.StatusOK, scores)
 }
 
+// GetRank handles GET /api/v1/leaderboards/:id/rank
+// Returns the rank of a specific user in a leaderboard.
+// Query parameter: user_id (required)
+// Response: 200 OK with { "user_id": "...", "rank": N }, 400 if user_id missing, 404/500 on error
 func (h *LeaderboardHandler) GetRank(c *gin.Context) {
 	leaderboardID := c.Param("id")
 	userID := c.Query("user_id")
@@ -138,6 +156,9 @@ func (h *LeaderboardHandler) GetRank(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user_id": userID, "rank": rank})
 }
 
+// RemoveUserScore handles DELETE /api/v1/leaderboards/:id/scores/:user_id
+// Removes a user's score from a leaderboard.
+// Response: 200 OK on success, 404 if not found, 500 on server error
 func (h *LeaderboardHandler) RemoveUserScore(c *gin.Context) {
 	leaderboardID := c.Param("id")
 	userID := c.Param("user_id")
@@ -151,7 +172,10 @@ func (h *LeaderboardHandler) RemoveUserScore(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"message": "user score removed successfully"})
 }
 
-// CreateUser maneja POST /api/v1/users
+// CreateUser handles POST /api/v1/users
+// Creates a new user (idempotent - returns success if already exists).
+// Request body: { "user_id": "string", "username": "string" }
+// Response: 201 Created, 400 on validation error, 409 if conflict, 500 on server error
 func (h *LeaderboardHandler) CreateUser(c *gin.Context) {
 	var req struct {
 		UserID   string `json:"user_id" binding:"required"`
@@ -172,7 +196,10 @@ func (h *LeaderboardHandler) CreateUser(c *gin.Context) {
 	c.JSON(http.StatusCreated, gin.H{"message": "user created successfully", "user_id": req.UserID})
 }
 
-// CreateLeaderboard maneja POST /api/v1/leaderboards
+// CreateLeaderboard handles POST /api/v1/leaderboards
+// Creates a new leaderboard (idempotent - returns success if already exists).
+// Request body: { "leaderboard_id": "string", "name": "string" }
+// Response: 201 Created, 400 on validation error, 409 if conflict, 500 on server error
 func (h *LeaderboardHandler) CreateLeaderboard(c *gin.Context) {
 	var req struct {
 		LeaderboardID string `json:"leaderboard_id" binding:"required"`

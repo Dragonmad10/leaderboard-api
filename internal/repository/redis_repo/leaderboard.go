@@ -8,6 +8,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// leaderboardRepository implements LeaderboardCacheRepository using Redis Sorted Sets (ZSET).
+// Provides O(log N) operations for leaderboard reads/writes:
+//   - ZADD: Insert/update score
+//   - ZINCRBY: Atomic increment
+//   - ZREVRANGE: Top N scores with pagination
+//   - ZREVRANK + ZSCORE: User rank and score (pipelined)
 type leaderboardRepository struct {
 	client *redis.Client
 }
@@ -16,7 +22,8 @@ func NewLeaderboardRepository(client *redis.Client) domain.LeaderboardCacheRepos
 	return &leaderboardRepository{client: client}
 }
 
-// UpdateScore fija una puntuación absoluta para un usuario en el Sorted Set (ZSET)
+// UpdateScore sets an absolute score for a user in the Sorted Set (ZSET).
+// Uses ZADD which inserts or updates the member's score.
 func (r *leaderboardRepository) UpdateScore(ctx context.Context, leaderboardID, userID string, score int64) error {
 	key := fmt.Sprintf("leaderboard:%s", leaderboardID)
 	return r.client.ZAdd(ctx, key, redis.Z{
@@ -25,21 +32,23 @@ func (r *leaderboardRepository) UpdateScore(ctx context.Context, leaderboardID, 
 	}).Err()
 }
 
-// IncrementScore incrementa/decrementa atómicamente la puntuación de un usuario (ZINCRBY)
+// IncrementScore atomically increments/decrements a user's score (ZINCRBY).
+// Returns the new score as float64 (Redis ZINCRBY return type).
 func (r *leaderboardRepository) IncrementScore(ctx context.Context, leaderboardID, userID string, delta int64) (float64, error) {
 	key := fmt.Sprintf("leaderboard:%s", leaderboardID)
 	return r.client.ZIncrBy(ctx, key, float64(delta), userID).Result()
 }
 
-// GetTop obtiene los N mejores jugadores ordenados de mayor a menor (ZREVRANGE)
-// Soporta offset para paginación
+// GetTop returns top N scores with pagination using ZREVRANGE (highest to lowest).
+// Supports offset for pagination (page 2, page 3, etc.).
+// Rank is calculated as offset + position (1-based).
 func (r *leaderboardRepository) GetTop(ctx context.Context, leaderboardID string, limit int, offset int) ([]domain.UserScore, error) {
 	if limit <= 0 {
 		return []domain.UserScore{}, nil
 	}
 
 	key := fmt.Sprintf("leaderboard:%s", leaderboardID)
-	// ZRevRangeWithScores usa índices inclusivos: offset a offset+limit-1
+	// ZRevRangeWithScores uses inclusive indices: start to end
 	start := int64(offset)
 	end := int64(offset + limit - 1)
 	zMembers, err := r.client.ZRevRangeWithScores(ctx, key, start, end).Result()
@@ -54,7 +63,7 @@ func (r *leaderboardRepository) GetTop(ctx context.Context, leaderboardID string
 			userID = fmt.Sprintf("%v", z.Member)
 		}
 
-		// Rank real = offset + i + 1 (1-based)
+		// Rank = offset + i + 1 (1-based ranking)
 		userScores[i] = domain.UserScore{
 			UserID:        userID,
 			LeaderboardID: leaderboardID,
@@ -66,8 +75,8 @@ func (r *leaderboardRepository) GetTop(ctx context.Context, leaderboardID string
 	return userScores, nil
 }
 
-// GetUserRank obtiene la posición global (1-based) y la puntuación actual de un usuario.
-// Utiliza Pipelining para empaquetar ZREVRANK y ZSCORE en una sola petición a Redis.
+// GetUserRank returns user's rank (1-based) and score using pipelined ZREVRANK + ZSCORE.
+// Pipelining reduces round-trips by sending both commands in a single request.
 func (r *leaderboardRepository) GetUserRank(ctx context.Context, leaderboardID, userID string) (int64, int64, error) {
 	key := fmt.Sprintf("leaderboard:%s", leaderboardID)
 
@@ -78,7 +87,7 @@ func (r *leaderboardRepository) GetUserRank(ctx context.Context, leaderboardID, 
 	_, err := pipe.Exec(ctx)
 	if err != nil {
 		if err == redis.Nil {
-			return 0, 0, nil // Usuario no encontrado en el leaderboard
+			return 0, 0, nil // User not found in leaderboard
 		}
 		return 0, 0, err
 	}
@@ -96,17 +105,18 @@ func (r *leaderboardRepository) GetUserRank(ctx context.Context, leaderboardID, 
 		return 0, 0, err
 	}
 
-	// Redis ZRevRank es 0-indexed, se le suma +1 para obtener la posición real
+	// Redis ZRevRank is 0-indexed, add +1 for 1-based rank
 	return rank + 1, int64(score), nil
 }
 
-// RemoveUser elimina a un usuario del leaderboard (ZREM)
+// RemoveUser removes a user from the leaderboard (ZREM).
 func (r *leaderboardRepository) RemoveUser(ctx context.Context, leaderboardID, userID string) error {
 	key := fmt.Sprintf("leaderboard:%s", leaderboardID)
 	return r.client.ZRem(ctx, key, userID).Err()
 }
 
-// PopulateCache inserta múltiples puntuaciones en lote (Bulk Upsert / Warmup)
+// PopulateCache bulk inserts multiple scores for cache warming (ZADD batch).
+// Used to repopulate Redis cache from PostgreSQL on cache miss (first page only).
 func (r *leaderboardRepository) PopulateCache(ctx context.Context, leaderboardID string, scores []domain.UserScore) error {
 	if len(scores) == 0 {
 		return nil
@@ -122,6 +132,6 @@ func (r *leaderboardRepository) PopulateCache(ctx context.Context, leaderboardID
 		}
 	}
 
-	// Inserta todos los registros en una sola llamada a Redis
+	// Insert all records in a single Redis call
 	return r.client.ZAdd(ctx, key, zMembers...).Err()
 }

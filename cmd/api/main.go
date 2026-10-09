@@ -19,6 +19,7 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// getEnv retrieves an environment variable or returns a default value if not set
 func getEnv(key, defaultVal string) string {
 	if val := os.Getenv(key); val != "" {
 		return val
@@ -27,10 +28,17 @@ func getEnv(key, defaultVal string) string {
 }
 
 func main() {
+	// Initialize structured JSON logger
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
-	// --- Redis Connection ---
+	// =========================================================================
+	// REDIS CONNECTION SETUP
+	// =========================================================================
+	// Redis is used for:
+	//   - Real-time leaderboard caching (Sorted Sets / ZSET)
+	//   - Rate limiting (Sliding Window with Lua script)
+	// Connection supports REDIS_ADDR, REDIS_URL, or defaults to localhost:6379
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
 		redisAddr = os.Getenv("REDIS_URL")
@@ -45,6 +53,7 @@ func main() {
 		Addr: redisAddr,
 	})
 
+	// Verify Redis connectivity with 5-second timeout
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if err := rdb.Ping(ctx).Err(); err != nil {
@@ -52,14 +61,24 @@ func main() {
 		os.Exit(1)
 	}
 
+	// Initialize Redis repositories
+	// LeaderboardRepository: handles ZSET operations for scores/ranks
+	// RateLimiterRepository: handles sliding window rate limiting
 	redisRepo := redis_repo.NewLeaderboardRepository(rdb)
 	rateLimiterRepo := redis_repo.NewRateLimiterRepository(rdb)
 
-	// --- PostgreSQL Connection ---
-	// Soporta ambos formatos: POSTGRES_URL completo O vars individuales DB_*
+	// =========================================================================
+	// POSTGRESQL CONNECTION SETUP
+	// =========================================================================
+	// PostgreSQL is the "Source of Truth" for all persistent data:
+	//   - Users, Leaderboards, Scores tables
+	//   - ACID transactions for data integrity
+	// Supports two configuration formats:
+	//   1. Full connection URL (POSTGRES_URL)
+	//   2. Individual variables (DB_HOST, DB_PORT, DB_USER, etc.) - Docker Compose style
 	pgConnStr := os.Getenv("POSTGRES_URL")
 	if pgConnStr == "" {
-		// Construir desde vars individuales (formato docker-compose)
+		// Build connection string from individual environment variables
 		host := getEnv("DB_HOST", "localhost")
 		port := getEnv("DB_PORT", "5432")
 		user := getEnv("DB_USER", "postgres")
@@ -81,20 +100,30 @@ func main() {
 	}
 	defer pgPool.Close()
 
+	// Initialize PostgreSQL repository (implements LeaderboardPersistentRepository interface)
 	pgRepo := postgres.NewPostgresRepository(pgPool)
 
-	// --- Services ---
-	// Pasar AMBOS repositorios: persistent (Postgres) y cache (Redis)
+	// =========================================================================
+	// SERVICE LAYER INITIALIZATION
+	// =========================================================================
+	// LeaderboardService coordinates between PostgreSQL (persistence) and Redis (cache)
+	// RateLimiterService handles API rate limiting
 	svc := service.NewLeaderboardService(pgRepo, redisRepo)
 	rateLimiterService := service.NewRateLimiterService(rateLimiterRepo)
 
-	// --- HTTP Handler ---
+	// =========================================================================
+	// HTTP HANDLER & ROUTER SETUP
+	// =========================================================================
 	handler := httphandler.NewLeaderboardHandler(svc)
 
-	// --- Router ---
+	// Configure router with middleware chain:
+	// 1. Gin Logger - request logging
+	// 2. Recovery - panic recovery with structured logging
+	// 3. RateLimiter - sliding window rate limiting (100 req/min per IP)
 	rateLimiterMiddleware := middleware.RateLimiter(rateLimiterService, 100, 1*time.Minute)
 	router := httphandler.SetupRouter(handler, rateLimiterMiddleware)
 
+	// Start HTTP server
 	port := os.Getenv("PORT")
 	if port == "" {
 		port = "8080"
@@ -105,6 +134,7 @@ func main() {
 		Handler: router,
 	}
 
+	// Run server in background goroutine
 	go func() {
 		slog.Info("Server started", slog.String("port", port))
 		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -113,12 +143,17 @@ func main() {
 		}
 	}()
 
+	// =========================================================================
+	// GRACEFUL SHUTDOWN HANDLING
+	// =========================================================================
+	// Wait for interrupt signal (SIGINT/SIGTERM)
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
 	slog.Info("Shutting down server...")
 
+	// Allow 5 seconds for in-flight requests to complete
 	shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer shutdownCancel()
 

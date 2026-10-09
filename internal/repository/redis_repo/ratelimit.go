@@ -10,6 +10,12 @@ import (
 	"github.com/redis/go-redis/v9"
 )
 
+// slidingWindowLuaScript implements a sliding window rate limiter using Redis Sorted Sets.
+// Algorithm:
+// 1. Remove expired entries (older than window)
+// 2. Count current requests in window
+// 3. If under limit: add current request with timestamp as score, set TTL, return allowed
+// 4. If over limit: return rejected with reset time
 const slidingWindowLuaScript = `
 local key = KEYS[1]
 local now = tonumber(ARGV[1])
@@ -31,6 +37,7 @@ else
 end
 `
 
+// rateLimiterRepo implements RateLimiterRepository using Redis + Lua script.
 type rateLimiterRepo struct {
 	client *redis.Client
 	script *redis.Script
@@ -43,21 +50,25 @@ func NewRateLimiterRepository(client *redis.Client) domain.RateLimiterRepository
 	}
 }
 
+// Allow checks if a request is allowed under the sliding window rate limit.
+// Uses a Lua script for atomic check-and-increment operation.
+// Key format: "ratelimit:{identifier}" (e.g., "ratelimit:192.168.1.1")
+// Member format: "{timestamp}:{uuid}" for uniqueness within same millisecond.
 func (r *rateLimiterRepo) Allow(ctx context.Context, key string, limit int64, window time.Duration) (*domain.RateLimitResult, error) {
-	now := time.Now().UnixNano() / int64(time.Millisecond)
+	now := time.Now().UnixNano() / int64(time.Millisecond)  // Current time in milliseconds
 	windowMs := window.Milliseconds()
-	memberID := fmt.Sprintf("%d:%s", now, uuid.New().String())
+	memberID := fmt.Sprintf("%d:%s", now, uuid.New().String()) // Unique member per request
 
 	formattedKey := fmt.Sprintf("ratelimit:%s", key)
 
 	res, err := r.script.Run(ctx, r.client, []string{formattedKey}, now, windowMs, limit, memberID).Result()
 	if err != nil {
-		return nil, fmt.Errorf("error ejecutando lua script rate limit: %w", err)
+		return nil, fmt.Errorf("error executing rate limit lua script: %w", err)
 	}
 
 	results, ok := res.([]interface{})
 	if !ok || len(results) < 3 {
-		return nil, fmt.Errorf("respuesta inesperada del script de lua")
+		return nil, fmt.Errorf("unexpected lua script response")
 	}
 
 	allowed := results[0].(int64) == 1
