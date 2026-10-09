@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log/slog"
 	"net/http"
 	"os"
@@ -12,16 +13,24 @@ import (
 
 	httphandler "github.com/Dragonmad10/leaderboard-api/internal/handler/http"
 	"github.com/Dragonmad10/leaderboard-api/internal/middleware"
+	"github.com/Dragonmad10/leaderboard-api/internal/repository/postgres"
 	"github.com/Dragonmad10/leaderboard-api/internal/repository/redis_repo"
 	"github.com/Dragonmad10/leaderboard-api/internal/service"
-	"github.com/gin-gonic/gin"
 	"github.com/redis/go-redis/v9"
 )
+
+func getEnv(key, defaultVal string) string {
+	if val := os.Getenv(key); val != "" {
+		return val
+	}
+	return defaultVal
+}
 
 func main() {
 	logger := slog.New(slog.NewJSONHandler(os.Stdout, nil))
 	slog.SetDefault(logger)
 
+	// --- Redis Connection ---
 	redisAddr := os.Getenv("REDIS_ADDR")
 	if redisAddr == "" {
 		redisAddr = os.Getenv("REDIS_URL")
@@ -43,28 +52,48 @@ func main() {
 		os.Exit(1)
 	}
 
-	repo := redis_repo.NewLeaderboardRepository(rdb)
+	redisRepo := redis_repo.NewLeaderboardRepository(rdb)
 	rateLimiterRepo := redis_repo.NewRateLimiterRepository(rdb)
 
-	svc := service.NewLeaderboardService(repo)
+	// --- PostgreSQL Connection ---
+	// Soporta ambos formatos: POSTGRES_URL completo O vars individuales DB_*
+	pgConnStr := os.Getenv("POSTGRES_URL")
+	if pgConnStr == "" {
+		// Construir desde vars individuales (formato docker-compose)
+		host := getEnv("DB_HOST", "localhost")
+		port := getEnv("DB_PORT", "5432")
+		user := getEnv("DB_USER", "postgres")
+		password := getEnv("DB_PASSWORD", "postgres")
+		dbname := getEnv("DB_NAME", "leaderboard")
+		sslmode := getEnv("DB_SSLMODE", "disable")
+
+		pgConnStr = fmt.Sprintf("postgres://%s:%s@%s:%s/%s?sslmode=%s",
+			user, password, host, port, dbname, sslmode)
+		slog.Info("Built PostgreSQL connection string from individual env vars",
+			slog.String("host", host), slog.String("port", port), slog.String("db", dbname))
+	}
+
+	slog.Info("Connecting to PostgreSQL")
+	pgPool, err := postgres.NewPostgresPool(ctx, pgConnStr)
+	if err != nil {
+		slog.Error("Failed to connect to PostgreSQL", slog.Any("error", err))
+		os.Exit(1)
+	}
+	defer pgPool.Close()
+
+	pgRepo := postgres.NewPostgresRepository(pgPool)
+
+	// --- Services ---
+	// Pasar AMBOS repositorios: persistent (Postgres) y cache (Redis)
+	svc := service.NewLeaderboardService(pgRepo, redisRepo)
 	rateLimiterService := service.NewRateLimiterService(rateLimiterRepo)
 
-	// Instanciado usando httphandler
+	// --- HTTP Handler ---
 	handler := httphandler.NewLeaderboardHandler(svc)
 
-	router := gin.Default()
-	router.Use(middleware.RateLimiter(rateLimiterService, 100, 1*time.Minute))
-
-	router.GET("/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"message": "home"})
-	})
-	router.GET("/api/v1/leaderboards/", func(c *gin.Context) {
-		c.JSON(http.StatusOK, gin.H{"message": "Leaderboard API is running"})
-	})
-	router.POST("/api/v1/leaderboards/:id/scores", handler.SubmitScore)
-	router.GET("/api/v1/leaderboards/:id/scores", handler.GetTopScores)
-	router.GET("/api/v1/leaderboards/:id/rank", handler.GetRank)
-	router.DELETE("/api/v1/leaderboards/:id/scores/:user_id", handler.RemoveUserScore)
+	// --- Router ---
+	rateLimiterMiddleware := middleware.RateLimiter(rateLimiterService, 100, 1*time.Minute)
+	router := httphandler.SetupRouter(handler, rateLimiterMiddleware)
 
 	port := os.Getenv("PORT")
 	if port == "" {
