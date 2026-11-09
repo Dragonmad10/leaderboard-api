@@ -9,7 +9,7 @@ down:
 	@echo "Stopping Docker containers..."
 	docker-compose down
 
-logs:mak
+logs:
 	docker-compose logs -f
 
 # Not check if this command follows the standard
