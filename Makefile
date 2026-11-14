@@ -1,4 +1,4 @@
-.PHONY: build run up down logs test lint
+.PHONY: build run up down logs test test-integration lint
 
 # Docker commands
 up:
@@ -25,6 +25,11 @@ build:
 test:
 	@echo "Running tests..."
 	go test -v -race ./...
+
+# Needs real databases: docker compose up -d postgres redis
+test-integration:
+	@echo "Running integration tests..."
+	go test -v -race -count=1 -tags integration ./test/integration/...
 
 lint:
 	@echo "Running golangci-lint..."
