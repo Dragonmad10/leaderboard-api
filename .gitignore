@@ -22,3 +22,9 @@ go.work
 
 #Environment files
 *.env
+
+# Compiled binary (make build)
+bin/
+
+# Claude Code instructions (local only)
+CLAUDE.md
