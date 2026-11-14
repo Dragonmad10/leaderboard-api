@@ -125,6 +125,30 @@ curl "localhost:8080/api/v1/leaderboards/game-1/rank?user_id=player-1"
 
 Or run the whole flow at once with `./test_api.sh` (needs `jq`).
 
+## Testing
+
+```bash
+make test               # unit tests, no database needed
+```
+
+| Package | What is tested | How |
+|---------|----------------|-----|
+| `internal/domain` | Errors map to the right HTTP status | Plain table-driven tests |
+| `internal/service` | Write order, cache-aside, fallbacks when Postgres or Redis is down | In-memory fakes of both repositories |
+| `internal/handler/http` | Every endpoint: validation, status codes, JSON bodies | `httptest` with a fake service |
+| `internal/middleware` | Rate limiter headers and 429, fail-open, panic recovery | `httptest` |
+
+The integration tests run the whole API against a real PostgreSQL and Redis:
+
+```bash
+docker compose up -d postgres redis
+make test-integration
+```
+
+They only touch data they create (unique IDs) and delete it afterwards.
+
+> **Some unit tests fail right now, and that is intended.** The tests describe what the API *should* do, so a failing test is a known bug waiting to be fixed, not a broken test.
+
 ## Project structure
 
 ```
@@ -137,6 +161,7 @@ internal/
 │   ├── postgres/          # SQL queries (source of truth)
 │   └── redis_repo/        # ZSET cache + Lua rate limiter
 └── service/               # Business logic: coordinates Postgres and Redis
+test/integration/          # End-to-end tests against real Postgres + Redis
 scripts/
 ├── init.sql               # Database schema
 └── benchmarks/            # k6 load tests
@@ -159,7 +184,8 @@ The thresholds in the scripts (e.g. p95 < 200ms) are goals I set for myself on m
 
 These are the things I want to learn next with this project:
 
-- [ ] **Write tests.** Right now there are no Go tests. I want to add unit tests for the service layer (mocking the repositories through the interfaces in `internal/domain`) and integration tests that run against real Postgres and Redis containers, e.g. with [testcontainers-go](https://golang.testcontainers.org/). Good chance to learn table-driven tests and how to test code that talks to a database.
+- [ ] **Fix what the tests found.** Ten unit tests fail on purpose: each one describes a real bug (mostly the service trusting a half-filled Redis cache). Fixing them one by one is the next thing to learn from.
+- [ ] **Test the repositories on their own** and try [testcontainers-go](https://golang.testcontainers.org/) so the integration tests start their own Postgres and Redis.
 - [ ] **Set up CI with GitHub Actions.** `.github/workflows/ci-cd.yml` exists but is empty. The goal is a pipeline that runs `golangci-lint`, `go test -race` and builds the Docker image on every push, so I learn how CI catches problems before they reach `main`.
 - [ ] **Deploy it somewhere real.** Put the API online on a platform like Fly.io, Render or Railway with a managed Postgres and Redis. That means learning about secrets and environment config, database migrations outside of `init.sql`, and checking logs of a running service, which is something you never see when everything runs on localhost.
 
