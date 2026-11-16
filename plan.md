@@ -31,7 +31,7 @@ about before the hard part (Phase 1b).
   **Commit:** `feat(handler): add user score and leaderboard stats endpoints`
   - Open question for Phase 1e (auto-create decision): `stats` of a leaderboard that
     doesn't exist returns `player_count: 0`, not 404.
-- [ ] **0.3 One log format.** Replace `gin.Logger()` (plain text) with our own
+- [x] **0.3 One log format.** Replace `gin.Logger()` (plain text) with our own
   `middleware.Logger()` (slog JSON) in `SetupRouter`. Keep the order: Logger first
   (outermost), then Recovery, then the rate limiter. While there, fix the logger itself:
   - take the logger as a parameter (`Logger(log *slog.Logger)`) instead of the global
@@ -39,6 +39,9 @@ about before the hard part (Phase 1b).
   - log latency as a number (`latency_ms`), not a string;
   - level from the status: 5xx → ERROR, 4xx → WARN, the rest → INFO;
   - tests that check the logged fields, not only the response.
+  - Done: `SetupRouter(handler, log, rateLimiter)` now takes the logger; `main.go` passes
+    its JSON logger. Errors attached with `c.Error(err)` already go into the request's line
+    (ready for 0.13).
   **Commit:** `refactor(middleware): log requests as json with an injected logger`
 - [ ] **0.4 Gin release mode.** Read `APP_ENV` in `main.go`; call
   `gin.SetMode(gin.ReleaseMode)` when it is `production`.
@@ -77,7 +80,8 @@ about before the hard part (Phase 1b).
   breaks in production, the cause is lost. Do it after 0.3: `handleError` calls
   `c.Error(err)` for 5xx, and the Logger adds the cause to the request's log line, so one
   request = one log line. Only for 5xx: 4xx errors are the client's fault and would flood
-  the logs.
+  the logs. Also inject the logger into `Recovery` (it still uses the global
+  `slog.Default()`), the same way as `Logger` in 0.3.
   **Commit:** `fix(handler): log the cause of internal errors`
 
 ---

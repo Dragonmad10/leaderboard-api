@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,8 +33,8 @@ func init() {
 
 type fakeService struct {
 	// What the fake should answer.
-	err      error
-	scores   []domain.UserScore
+	err         error
+	scores      []domain.UserScore
 	rank        int64
 	newScore    int64
 	userScore   int64
@@ -102,10 +103,13 @@ func (f *fakeService) CreateLeaderboard(_ context.Context, leaderboardID, name s
 // noRateLimit is a middleware that lets everything through.
 func noRateLimit(c *gin.Context) { c.Next() }
 
+// discardLogger throws request logs away, so test output stays readable.
+var discardLogger = slog.New(slog.NewTextHandler(io.Discard, nil))
+
 // send builds the real router (same routes as production), sends one request
 // to it and returns the recorded response. No real server or port is needed.
 func send(svc domain.LeaderboardService, method, path, body string) *httptest.ResponseRecorder {
-	router := SetupRouter(NewLeaderboardHandler(svc), noRateLimit)
+	router := SetupRouter(NewLeaderboardHandler(svc), discardLogger, noRateLimit)
 
 	req := httptest.NewRequest(method, path, strings.NewReader(body))
 	if body != "" {
@@ -618,7 +622,7 @@ func (r *recordingLimiter) CheckLimit(_ context.Context, identifier string, limi
 // limited. Two requests from the same connection must count as the same client.
 func TestRateLimit_CannotBeBypassedWithForwardedForHeader(t *testing.T) {
 	limiter := &recordingLimiter{}
-	router := SetupRouter(NewLeaderboardHandler(&fakeService{}), middleware.RateLimiter(limiter, 100, time.Minute))
+	router := SetupRouter(NewLeaderboardHandler(&fakeService{}), discardLogger, middleware.RateLimiter(limiter, 100, time.Minute))
 
 	for _, fakeIP := range []string{"1.1.1.1", "2.2.2.2"} {
 		req := httptest.NewRequest("GET", "/health", nil)

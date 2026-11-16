@@ -21,6 +21,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -83,6 +84,7 @@ func newApp(t *testing.T, rateLimit int64) *app {
 	limiter := service.NewRateLimiterService(redis_repo.NewRateLimiterRepository(rdb))
 	router := httphandler.SetupRouter(
 		httphandler.NewLeaderboardHandler(svc),
+		slog.New(slog.NewTextHandler(io.Discard, nil)), // request logs are not useful here
 		middleware.RateLimiter(limiter, rateLimit, time.Minute),
 	)
 

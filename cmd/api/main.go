@@ -117,11 +117,11 @@ func main() {
 	handler := httphandler.NewLeaderboardHandler(svc)
 
 	// Configure router with middleware chain:
-	// 1. Gin Logger - request logging
+	// 1. Logger - one JSON log line per request (same logger as the rest of the app)
 	// 2. Recovery - panic recovery with structured logging
 	// 3. RateLimiter - sliding window rate limiting (100 req/min per IP)
 	rateLimiterMiddleware := middleware.RateLimiter(rateLimiterService, 100, 1*time.Minute)
-	router := httphandler.SetupRouter(handler, rateLimiterMiddleware)
+	router := httphandler.SetupRouter(handler, logger, rateLimiterMiddleware)
 
 	// Start HTTP server
 	port := os.Getenv("PORT")

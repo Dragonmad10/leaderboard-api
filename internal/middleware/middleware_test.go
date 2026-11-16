@@ -1,6 +1,7 @@
 package middleware
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -181,15 +182,162 @@ func TestRecovery_NoPanic_DoesNothing(t *testing.T) {
 // Logger
 // =============================================================================
 
+// The logger receives its *slog.Logger as a parameter, so a test can give it
+// one that writes into a buffer and then read back exactly what was logged.
+
+// newCapturingLogger returns a JSON logger that writes into buf.
+// Level Debug so nothing is filtered out by the logger itself.
+func newCapturingLogger(buf *bytes.Buffer) *slog.Logger {
+	return slog.New(slog.NewJSONHandler(buf, &slog.HandlerOptions{Level: slog.LevelDebug}))
+}
+
+// logLines parses every line in buf as one JSON object.
+func logLines(t *testing.T, buf *bytes.Buffer) []map[string]any {
+	t.Helper()
+	var lines []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(buf.String()), "\n") {
+		if line == "" {
+			continue
+		}
+		var entry map[string]any
+		if err := json.Unmarshal([]byte(line), &entry); err != nil {
+			t.Fatalf("log line is not JSON: %v\nline: %s", err, line)
+		}
+		lines = append(lines, entry)
+	}
+	return lines
+}
+
+// onlyLogLine checks that exactly one line was logged and returns it.
+func onlyLogLine(t *testing.T, buf *bytes.Buffer) map[string]any {
+	t.Helper()
+	lines := logLines(t, buf)
+	if len(lines) != 1 {
+		t.Fatalf("got %d log lines; want exactly 1 per request\nlog:\n%s", len(lines), buf.String())
+	}
+	return lines[0]
+}
+
 // The logger must never change the response; it only observes it.
 func TestLogger_DoesNotChangeTheResponse(t *testing.T) {
+	var buf bytes.Buffer
+
+	rec, reached := call(Logger(newCapturingLogger(&buf)), ok)
+
+	if rec.Code != http.StatusOK || !reached {
+		t.Errorf("status = %d, reached handler = %v; want 200 and true", rec.Code, reached)
+	}
+}
+
+func TestLogger_WritesOneJSONLineWithTheRequestDetails(t *testing.T) {
+	var buf bytes.Buffer
+
+	call(Logger(newCapturingLogger(&buf)), ok)
+
+	entry := onlyLogLine(t, &buf)
+	if entry["method"] != "GET" {
+		t.Errorf("method = %v; want GET", entry["method"])
+	}
+	if entry["path"] != "/test" {
+		t.Errorf("path = %v; want /test", entry["path"])
+	}
+	// JSON numbers come back as float64 in Go. Status must be a number, not "200".
+	if entry["status"] != float64(200) {
+		t.Errorf("status = %v (%T); want the number 200", entry["status"], entry["status"])
+	}
+	if entry["client_ip"] != "203.0.113.7" {
+		t.Errorf("client_ip = %v; want 203.0.113.7", entry["client_ip"])
+	}
+}
+
+// Latency must be a number so log tools can average it and compute p95.
+// A string like "1.2ms" cannot be sorted or summed.
+func TestLogger_LatencyIsANumberInMilliseconds(t *testing.T) {
+	var buf bytes.Buffer
+
+	call(Logger(newCapturingLogger(&buf)), func(c *gin.Context) {
+		time.Sleep(5 * time.Millisecond)
+		ok(c)
+	})
+
+	entry := onlyLogLine(t, &buf)
+	latency, isNumber := entry["latency_ms"].(float64)
+	if !isNumber {
+		t.Fatalf("latency_ms = %v (%T); want a number", entry["latency_ms"], entry["latency_ms"])
+	}
+	if latency < 5 {
+		t.Errorf("latency_ms = %v; want at least 5 (the handler slept 5ms)", latency)
+	}
+}
+
+// The level tells you how urgent a line is, so alerts can watch for ERROR.
+// 5xx is our fault (ERROR), 4xx is the client's fault (WARN), the rest is INFO.
+func TestLogger_LevelFollowsTheStatus(t *testing.T) {
+	tests := []struct {
+		status int
+		want   string
+	}{
+		{http.StatusOK, "INFO"},
+		{http.StatusCreated, "INFO"},
+		{http.StatusBadRequest, "WARN"},
+		{http.StatusNotFound, "WARN"},
+		{http.StatusTooManyRequests, "WARN"},
+		{http.StatusInternalServerError, "ERROR"},
+		{http.StatusServiceUnavailable, "ERROR"},
+	}
+	for _, tt := range tests {
+		var buf bytes.Buffer
+
+		call(Logger(newCapturingLogger(&buf)), func(c *gin.Context) { c.Status(tt.status) })
+
+		if got := onlyLogLine(t, &buf)["level"]; got != tt.want {
+			t.Errorf("status %d logged at level %v; want %s", tt.status, got, tt.want)
+		}
+	}
+}
+
+// Errors a handler attaches with c.Error(err) go into the SAME log line as the
+// request, so one request = one line with all its context.
+func TestLogger_AttachedErrorsAreInTheSameLine(t *testing.T) {
+	var buf bytes.Buffer
+
+	call(Logger(newCapturingLogger(&buf)), func(c *gin.Context) {
+		_ = c.Error(errors.New("connection refused"))
+		c.Status(http.StatusInternalServerError)
+	})
+
+	entry := onlyLogLine(t, &buf)
+	if got, _ := entry["error"].(string); !strings.Contains(got, "connection refused") {
+		t.Errorf("error = %q; want it to contain the cause %q", got, "connection refused")
+	}
+}
+
+func TestLogger_NoErrorFieldWhenThereIsNoError(t *testing.T) {
+	var buf bytes.Buffer
+
+	call(Logger(newCapturingLogger(&buf)), ok)
+
+	if got, exists := onlyLogLine(t, &buf)["error"]; exists {
+		t.Errorf("error = %v; want no error field for a successful request", got)
+	}
+}
+
+// With Logger outside Recovery (the order used in SetupRouter), a request that
+// panicked is still logged, with the 500 that Recovery wrote.
+func TestLogger_OutsideRecovery_LogsPanicsAs500(t *testing.T) {
+	var buf bytes.Buffer
+	// Recovery still uses the global slog logger for the stack trace. Hide it.
 	old := slog.Default()
 	slog.SetDefault(slog.New(slog.NewTextHandler(io.Discard, nil)))
 	t.Cleanup(func() { slog.SetDefault(old) })
 
-	rec, reached := call(Logger(), ok)
+	router := gin.New()
+	router.Use(Logger(newCapturingLogger(&buf)), Recovery())
+	router.GET("/test", func(c *gin.Context) { panic("boom") })
+	router.ServeHTTP(httptest.NewRecorder(), httptest.NewRequest("GET", "/test", nil))
 
-	if rec.Code != http.StatusOK || !reached {
-		t.Errorf("status = %d, reached handler = %v; want 200 and true", rec.Code, reached)
+	entry := onlyLogLine(t, &buf)
+	if entry["status"] != float64(500) || entry["level"] != "ERROR" {
+		t.Errorf("status = %v, level = %v; want 500 and ERROR", entry["status"], entry["level"])
 	}
 }
