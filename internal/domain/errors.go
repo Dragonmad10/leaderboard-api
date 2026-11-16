@@ -5,20 +5,6 @@ import (
 	"fmt"
 )
 
-var (
-	// ErrNotFound indicates a resource was not found (user, leaderboard, score)
-	ErrNotFound = errors.New("resource not found")
-
-	// ErrInvalidInput indicates invalid input data
-	ErrInvalidInput = errors.New("invalid input")
-
-	// ErrConflict indicates a conflict (e.g., duplicate resource)
-	ErrConflict = errors.New("conflict")
-
-	// ErrInternal indicates an internal server error
-	ErrInternal = errors.New("internal server error")
-)
-
 // AppError wraps an error with an associated HTTP status code.
 type AppError struct {
 	Code    int    // HTTP status code

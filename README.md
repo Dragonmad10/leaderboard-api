@@ -155,7 +155,7 @@ They only touch data they create (unique IDs) and delete it afterwards.
 cmd/api/main.go            # Entry point: wires Redis, Postgres, services and router
 internal/
 ├── domain/                # Types, interfaces and errors
-├── handler/http/          # Gin handlers, routes, response helpers
+├── handler/http/          # Gin handlers and routes
 ├── middleware/            # Logger, panic recovery, rate limiter
 ├── repository/
 │   ├── postgres/          # SQL queries (source of truth)
