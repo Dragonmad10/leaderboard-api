@@ -73,8 +73,10 @@ func (r *PostgresRepository) DeleteUserScore(ctx context.Context, leaderboardID,
 func (r *PostgresRepository) CountPlayers(ctx context.Context, leaderboardID string) (int64, error) {
 	query := `SELECT COUNT(*) FROM scores WHERE leaderboard_id = $1`
 	var count int64
-	err := r.pool.QueryRow(ctx, query, leaderboardID).Scan(&count)
-	return count, err
+	if err := r.pool.QueryRow(ctx, query, leaderboardID).Scan(&count); err != nil {
+		return 0, domain.NewInternalError("failed to count players", err)
+	}
+	return count, nil
 }
 
 // GetUserRank returns a user's rank using PostgreSQL Window Function (RANK() OVER).

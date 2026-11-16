@@ -151,6 +151,34 @@ func (a *app) rank(t *testing.T, ip, leaderboardID, userID string) int64 {
 	return body.Rank
 }
 
+func (a *app) userScore(t *testing.T, ip, leaderboardID, userID string) int64 {
+	t.Helper()
+	rec := a.do(ip, "GET", "/api/v1/leaderboards/"+leaderboardID+"/scores/"+userID, "")
+	mustStatus(t, rec, http.StatusOK, "get score of "+userID)
+
+	var body struct {
+		Score int64 `json:"score"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("score response is not JSON: %v", err)
+	}
+	return body.Score
+}
+
+func (a *app) playerCount(t *testing.T, ip, leaderboardID string) int64 {
+	t.Helper()
+	rec := a.do(ip, "GET", "/api/v1/leaderboards/"+leaderboardID+"/stats", "")
+	mustStatus(t, rec, http.StatusOK, "get stats")
+
+	var body struct {
+		PlayerCount int64 `json:"player_count"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+		t.Fatalf("stats response is not JSON: %v", err)
+	}
+	return body.PlayerCount
+}
+
 func wantOrder(t *testing.T, step string, scores []domain.UserScore, want ...string) {
 	t.Helper()
 	got := make([]string, len(scores))
@@ -241,6 +269,14 @@ func TestLeaderboardFlow(t *testing.T) {
 		t.Errorf("score stored in PostgreSQL = %d; want 350", stored)
 	}
 
+	// 6b. The API reports the same score and the player count.
+	if got := a.userScore(t, ip, board, carol); got != 350 {
+		t.Errorf("GET carol's score = %d; want 350", got)
+	}
+	if got := a.playerCount(t, ip, board); got != 3 {
+		t.Errorf("player_count = %d; want 3", got)
+	}
+
 	// 7. Lose the cache (as if Redis had restarted). The API must still answer
 	//    correctly from PostgreSQL, and then refill Redis in the background.
 	if err := a.redis.Del(ctx, cacheKey).Err(); err != nil {
@@ -266,6 +302,12 @@ func TestLeaderboardFlow(t *testing.T) {
 
 	rec = a.do(ip, "GET", "/api/v1/leaderboards/"+board+"/rank?user_id="+alice, "")
 	mustStatus(t, rec, http.StatusNotFound, "rank of a deleted user")
+
+	rec = a.do(ip, "GET", "/api/v1/leaderboards/"+board+"/scores/"+alice, "")
+	mustStatus(t, rec, http.StatusNotFound, "score of a deleted user")
+	if got := a.playerCount(t, ip, board); got != 2 {
+		t.Errorf("player_count after deleting alice = %d; want 2", got)
+	}
 }
 
 // TestRateLimit checks the real Lua script in Redis: with a limit of 3

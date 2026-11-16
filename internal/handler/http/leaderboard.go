@@ -156,6 +156,38 @@ func (h *LeaderboardHandler) GetRank(c *gin.Context) {
 	c.JSON(http.StatusOK, gin.H{"user_id": userID, "rank": rank})
 }
 
+// GetUserScore handles GET /api/v1/leaderboards/:id/scores/:user_id
+// Returns the current score of one user in a leaderboard.
+// Response: 200 OK with { "user_id", "leaderboard_id", "score" }, 404 if the user has no score, 500 on error
+func (h *LeaderboardHandler) GetUserScore(c *gin.Context) {
+	leaderboardID := c.Param("id")
+	userID := c.Param("user_id")
+
+	score, err := h.svc.GetUserScore(c.Request.Context(), leaderboardID, userID)
+	if err != nil {
+		handleError(c, err, "Failed to retrieve score")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"user_id": userID, "leaderboard_id": leaderboardID, "score": score})
+}
+
+// GetStats handles GET /api/v1/leaderboards/:id/stats
+// Returns statistics about a leaderboard. An object (not a bare number) so more
+// fields can be added later without breaking clients.
+// Response: 200 OK with { "leaderboard_id", "player_count" }, 500 on error
+func (h *LeaderboardHandler) GetStats(c *gin.Context) {
+	leaderboardID := c.Param("id")
+
+	count, err := h.svc.CountPlayers(c.Request.Context(), leaderboardID)
+	if err != nil {
+		handleError(c, err, "Failed to retrieve leaderboard stats")
+		return
+	}
+
+	c.JSON(http.StatusOK, gin.H{"leaderboard_id": leaderboardID, "player_count": count})
+}
+
 // RemoveUserScore handles DELETE /api/v1/leaderboards/:id/scores/:user_id
 // Removes a user's score from a leaderboard.
 // Response: 200 OK on success, 404 if not found, 500 on server error

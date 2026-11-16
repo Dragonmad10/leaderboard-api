@@ -17,46 +17,68 @@ about before the hard part (Phase 1b).
 - [x] **0.1 Remove dead code.** `handler/http/response.go` (helpers nobody calls),
   `redis_repo/client.go` (file that only holds a comment), the unused sentinel errors
   `ErrNotFound`/`ErrInvalidInput`/`ErrConflict`/`ErrInternal` in `domain/errors.go`.
-  → `refactor: remove unused code`
-- [ ] **0.2 Shrink the repository interface.** Remove `GetScore` and `CountPlayers`
-  from `LeaderboardPersistentRepository`, from the Postgres repo and from the service fake.
-  Why: every method in an interface must be written in every fake; unused ones only cost.
-  → `refactor(domain): drop unused repository methods`
+  **Commit:** `refactor: remove unused code`
+- [x] **0.2 Use `GetScore` and `CountPlayers` instead of deleting them.** They existed in
+  the repository but nothing called them. Decision: expose them as endpoints.
+  - `GET /api/v1/leaderboards/:id/scores/:user_id` → `{"user_id","leaderboard_id","score"}`
+  - `GET /api/v1/leaderboards/:id/stats` → `{"leaderboard_id","player_count"}` (an object,
+    so more stats can be added later without breaking clients)
+  - Both read from Postgres only, not Redis: Redis can miss players or be stale until
+    Phase 1b. Revisit after Phase 1b: once the cache is guaranteed complete, `ZSCORE` and
+    `ZCARD` (O(1)) could answer these.
+  - Unit tests (service + handler) and integration test steps added. The Postgres
+    `CountPlayers` now wraps its error like the other methods.
+  **Commit:** `feat(handler): add user score and leaderboard stats endpoints`
+  - Open question for Phase 1e (auto-create decision): `stats` of a leaderboard that
+    doesn't exist returns `player_count: 0`, not 404.
 - [ ] **0.3 One log format.** Replace `gin.Logger()` (plain text) with our own
-  `middleware.Logger()` (slog JSON) in `SetupRouter`.
-  → `refactor(handler): log requests with slog`
+  `middleware.Logger()` (slog JSON) in `SetupRouter`. Keep the order: Logger first
+  (outermost), then Recovery, then the rate limiter. While there, fix the logger itself:
+  - take the logger as a parameter (`Logger(log *slog.Logger)`) instead of the global
+    `slog.Default()`, so tests can capture and check the output;
+  - log latency as a number (`latency_ms`), not a string;
+  - level from the status: 5xx → ERROR, 4xx → WARN, the rest → INFO;
+  - tests that check the logged fields, not only the response.
+  **Commit:** `refactor(middleware): log requests as json with an injected logger`
 - [ ] **0.4 Gin release mode.** Read `APP_ENV` in `main.go`; call
   `gin.SetMode(gin.ReleaseMode)` when it is `production`.
-  → `fix: run gin in release mode in production`
+  **Commit:** `fix: run gin in release mode in production`
 - [ ] **0.5 Remove the duplicate route** `GET /api/v1/leaderboards/` (same job as `/health`).
-  → `refactor(handler): remove duplicate status route`
+  **Commit:** `refactor(handler): remove duplicate status route`
 - [ ] **0.6 Check `rows.Err()`** in Postgres `GetTopScores`. Without it, a connection
   dropped halfway returns a partial list as if it were complete.
-  → `fix(postgres): check row iteration errors`
+  **Commit:** `fix(postgres): check row iteration errors`
 - [ ] **0.7 Add `ReadHeaderTimeout`** to `http.Server` (protects against Slowloris:
   clients that send headers very slowly to hold connections open).
-  → `fix: set a read header timeout on the http server`
+  **Commit:** `fix: set a read header timeout on the http server`
 - [ ] **0.8 Decide on `test_api.sh`.** It repeats the integration tests and step 12
   expects a 404 the API never returns. Delete it (and its README line) or fix it.
-  → `chore: remove test_api.sh`
+  **Commit:** `chore: remove test_api.sh`
 - [ ] **0.9 Makefile:** use `docker compose` (v2) everywhere, add `clean_volumes` to `.PHONY`.
-  → `chore: use docker compose v2 in the makefile`
+  **Commit:** `chore: use docker compose v2 in the makefile`
 - [ ] **0.10 Redis client setup in its own function** (what the deleted `redis_repo/client.go`
   was meant for). Add `redis_repo.NewClient(...)`, mirroring `postgres.NewPostgresPool`:
   read the config, set timeouts, ping. Fixes a real bug: `REDIS_URL=redis://localhost:6379`
   is documented as accepted, but `main.go` passes it as a plain address (`host:port`), so it
   can't connect. Use `redis.ParseURL` for URLs.
-  → `fix(redis): parse REDIS_URL as a url`
+  **Commit:** `fix(redis): connect with a redis:// url`
 - [ ] **0.11 Clean shutdown.** The Redis client is never closed (`rdb.Close()`). And
   `os.Exit` inside the server goroutine skips every `defer` (deferred cleanup), so the
   Postgres pool isn't closed either. Let `main` own the exit: send the listen error over a
   channel instead.
-  → `fix: close redis and postgres on shutdown`
+  **Commit:** `fix: close redis and postgres on shutdown`
 - [ ] **0.12 Use `errors.Is(err, redis.Nil)`** instead of `err == redis.Nil` in
   `redis_repo/leaderboard.go`. `==` stops matching as soon as the error is wrapped
   (`fmt.Errorf("...: %w", err)`); `errors.Is` looks inside the wrapping. The linter
   (`errorlint`) will flag this in Phase 1c anyway.
-  → `refactor(redis): compare errors with errors.Is`
+  **Commit:** `refactor(redis): compare errors with errors.Is`
+- [ ] **0.13 Log the cause of every 500.** `handleError` sends "Failed to ..." to the client
+  but never logs the real error (`connection refused`, the SQL error...). When something
+  breaks in production, the cause is lost. Do it after 0.3: `handleError` calls
+  `c.Error(err)` for 5xx, and the Logger adds the cause to the request's log line, so one
+  request = one log line. Only for 5xx: 4xx errors are the client's fault and would flood
+  the logs.
+  **Commit:** `fix(handler): log the cause of internal errors`
 
 ---
 
@@ -89,6 +111,11 @@ The 4 failing tests in `internal/handler/http`, plus bugs no test covers yet.
 
 ### Step 1: write `docs/cache-design.md` before coding
 Half a page to one page. It's interview material. It must answer:
+
+0. **Scope: what lives in the cache?** The full leaderboard, only the top N, or the full
+   leaderboard for active leaderboards only (idle ones expire)? Decide from what the API
+   must answer: exact rank for every player needs every player in Redis. Include a memory
+   estimate (measure one key with `MEMORY USAGE`).
 
 1. **Completeness:** how does the service know the Redis sorted set holds *every*
    player, not just some? Today "key exists" is treated as "cache is complete".

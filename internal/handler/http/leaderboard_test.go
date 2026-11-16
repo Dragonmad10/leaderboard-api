@@ -34,8 +34,10 @@ type fakeService struct {
 	// What the fake should answer.
 	err      error
 	scores   []domain.UserScore
-	rank     int64
-	newScore int64
+	rank        int64
+	newScore    int64
+	userScore   int64
+	playerCount int64
 
 	// What the handler sent to the service.
 	called        bool
@@ -66,6 +68,16 @@ func (f *fakeService) GetTopScores(_ context.Context, leaderboardID string, limi
 func (f *fakeService) GetUserRank(_ context.Context, leaderboardID, userID string) (int64, error) {
 	f.called, f.leaderboardID, f.userID = true, leaderboardID, userID
 	return f.rank, f.err
+}
+
+func (f *fakeService) GetUserScore(_ context.Context, leaderboardID, userID string) (int64, error) {
+	f.called, f.leaderboardID, f.userID = true, leaderboardID, userID
+	return f.userScore, f.err
+}
+
+func (f *fakeService) CountPlayers(_ context.Context, leaderboardID string) (int64, error) {
+	f.called, f.leaderboardID = true, leaderboardID
+	return f.playerCount, f.err
 }
 
 func (f *fakeService) RemoveUserScore(_ context.Context, leaderboardID, userID string) error {
@@ -396,6 +408,63 @@ func TestGetRank_UnknownUserIs404(t *testing.T) {
 	if got := jsonBody(t, rec)["error"]; got != "user not found in leaderboard" {
 		t.Errorf("error message = %v; want the not-found message", got)
 	}
+}
+
+// =============================================================================
+// GET /api/v1/leaderboards/:id/scores/:user_id
+// =============================================================================
+
+func TestGetUserScore_Valid(t *testing.T) {
+	svc := &fakeService{userScore: 1500}
+
+	rec := send(svc, "GET", "/api/v1/leaderboards/game-1/scores/alice", "")
+
+	wantStatus(t, rec, http.StatusOK)
+	if svc.leaderboardID != "game-1" || svc.userID != "alice" {
+		t.Errorf("service received leaderboard=%q user=%q; want game-1, alice", svc.leaderboardID, svc.userID)
+	}
+	body := jsonBody(t, rec)
+	if body["user_id"] != "alice" || body["leaderboard_id"] != "game-1" || body["score"] != float64(1500) {
+		t.Errorf("body = %v; want user_id=alice leaderboard_id=game-1 score=1500", body)
+	}
+}
+
+func TestGetUserScore_UnknownUserIs404(t *testing.T) {
+	svc := &fakeService{err: domain.NewNotFoundError("score not found", nil)}
+
+	rec := send(svc, "GET", "/api/v1/leaderboards/game-1/scores/ghost", "")
+
+	wantStatus(t, rec, http.StatusNotFound)
+	if got := jsonBody(t, rec)["error"]; got != "score not found" {
+		t.Errorf("error message = %v; want the not-found message", got)
+	}
+}
+
+// =============================================================================
+// GET /api/v1/leaderboards/:id/stats
+// =============================================================================
+
+func TestGetStats_Valid(t *testing.T) {
+	svc := &fakeService{playerCount: 42}
+
+	rec := send(svc, "GET", "/api/v1/leaderboards/game-1/stats", "")
+
+	wantStatus(t, rec, http.StatusOK)
+	if svc.leaderboardID != "game-1" {
+		t.Errorf("service received leaderboard=%q; want game-1", svc.leaderboardID)
+	}
+	body := jsonBody(t, rec)
+	if body["leaderboard_id"] != "game-1" || body["player_count"] != float64(42) {
+		t.Errorf("body = %v; want leaderboard_id=game-1 player_count=42", body)
+	}
+}
+
+func TestGetStats_ServiceErrorIs500(t *testing.T) {
+	svc := &fakeService{err: errors.New("connection refused")}
+
+	rec := send(svc, "GET", "/api/v1/leaderboards/game-1/stats", "")
+
+	wantStatus(t, rec, http.StatusInternalServerError)
 }
 
 // =============================================================================

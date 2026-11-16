@@ -129,6 +129,20 @@ func (s *leaderboardService) GetUserRank(ctx context.Context, leaderboardID stri
 	return rank, nil
 }
 
+// GetUserScore returns a user's current score.
+// Read from PostgreSQL, not Redis: it is a primary-key lookup (one index read, fast),
+// and Redis can hold a stale value until the cache design is fixed (see plan.md, Phase 1b).
+func (s *leaderboardService) GetUserScore(ctx context.Context, leaderboardID string, userID string) (int64, error) {
+	return s.persistentRepo.GetScore(ctx, leaderboardID, userID)
+}
+
+// CountPlayers returns the number of players in a leaderboard.
+// Read from PostgreSQL: Redis ZCARD would be O(1), but it is only correct when the
+// cache holds every player, and nothing guarantees that yet (see plan.md, Phase 1b).
+func (s *leaderboardService) CountPlayers(ctx context.Context, leaderboardID string) (int64, error) {
+	return s.persistentRepo.CountPlayers(ctx, leaderboardID)
+}
+
 // RemoveUserScore deletes a user's score from both PostgreSQL and Redis.
 // Delete path: PostgreSQL (source of truth) -> Redis (cache invalidation)
 func (s *leaderboardService) RemoveUserScore(ctx context.Context, leaderboardID string, userID string) error {

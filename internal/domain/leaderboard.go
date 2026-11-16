@@ -81,6 +81,12 @@ type LeaderboardService interface {
 	// GetUserRank returns a user's rank (Cache-Aside pattern).
 	GetUserRank(ctx context.Context, leaderboardID string, userID string) (int64, error)
 
+	// GetUserScore returns a user's current score (read from PostgreSQL).
+	GetUserScore(ctx context.Context, leaderboardID string, userID string) (int64, error)
+
+	// CountPlayers returns how many players have a score in a leaderboard (read from PostgreSQL).
+	CountPlayers(ctx context.Context, leaderboardID string) (int64, error)
+
 	// RemoveUserScore removes a user's score from the leaderboard.
 	RemoveUserScore(ctx context.Context, leaderboardID string, userID string) error
 

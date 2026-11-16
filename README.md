@@ -43,7 +43,11 @@ The idea is simple: a REST API for game leaderboards. You create users and leade
 | Increment score | Postgres (atomic upsert) → Redis (best effort) | — |
 | Get top scores | — | Redis → Postgres if cache misses |
 | Get user rank | — | Redis (`ZREVRANK`) → Postgres (window function) |
+| Get one user's score | — | Postgres only (primary-key lookup) |
+| Get stats (player count) | — | Postgres only (`COUNT(*)`) |
 | Delete score | Postgres → Redis | — |
+
+The score and the player count are read from Postgres on purpose: Redis can still miss players or hold a stale value (see [plan.md](plan.md), Phase 1b), and reading one row by primary key is fast anyway.
 
 **Main design decisions (and why I made them):**
 
@@ -99,7 +103,9 @@ make build
 | `POST` | `/api/v1/leaderboards/:id/scores` | `{"user_id", "score"}` | Set a user's score |
 | `POST` | `/api/v1/leaderboards/:id/scores/increment` | `{"user_id", "delta"}` | Add to a user's score |
 | `GET` | `/api/v1/leaderboards/:id/scores?limit=10&offset=0` | — | Top scores (paginated) |
+| `GET` | `/api/v1/leaderboards/:id/scores/:user_id` | — | A user's score |
 | `GET` | `/api/v1/leaderboards/:id/rank?user_id=...` | — | A user's rank |
+| `GET` | `/api/v1/leaderboards/:id/stats` | — | Leaderboard stats (`player_count`) |
 | `DELETE` | `/api/v1/leaderboards/:id/scores/:user_id` | — | Remove a user's score |
 
 Every response includes `X-RateLimit-Limit`, `X-RateLimit-Remaining` and `X-RateLimit-Reset` headers. When you go over the limit you get a `429` with `Retry-After`.
@@ -121,6 +127,8 @@ curl -X POST localhost:8080/api/v1/leaderboards/game-1/scores/increment \
 
 curl "localhost:8080/api/v1/leaderboards/game-1/scores?limit=10"
 curl "localhost:8080/api/v1/leaderboards/game-1/rank?user_id=player-1"
+curl "localhost:8080/api/v1/leaderboards/game-1/scores/player-1"
+curl "localhost:8080/api/v1/leaderboards/game-1/stats"
 ```
 
 Or run the whole flow at once with `./test_api.sh` (needs `jq`).

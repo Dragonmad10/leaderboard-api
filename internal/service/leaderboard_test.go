@@ -192,7 +192,10 @@ func (f *fakePostgres) CountPlayers(_ context.Context, leaderboardID string) (in
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	f.calls++
-	return int64(len(f.scores[leaderboardID])), f.err
+	if f.err != nil {
+		return 0, f.err
+	}
+	return int64(len(f.scores[leaderboardID])), nil
 }
 
 func (f *fakePostgres) CreateUser(context.Context, string, string) error {
@@ -894,6 +897,107 @@ func TestRemoveUserScore_PostgresDown_ReturnsErrorAndLeavesRedisAlone(t *testing
 	}
 	if _, ok := redis.score(leaderID, "alice"); !ok {
 		t.Error("alice was removed from Redis although the PostgreSQL delete failed")
+	}
+}
+
+// =============================================================================
+// GetUserScore
+// =============================================================================
+// The score of one player is read from PostgreSQL: it is a single-row lookup
+// by primary key (fast), and PostgreSQL is always right, while Redis can be
+// stale or missing players.
+
+func TestGetUserScore_ReturnsTheScore(t *testing.T) {
+	svc, _, _ := newTestService(t)
+	_ = svc.SubmitScore(ctx, leaderID, "alice", 300)
+
+	got, err := svc.GetUserScore(ctx, leaderID, "alice")
+
+	if err != nil {
+		t.Fatalf("GetUserScore returned an error: %v", err)
+	}
+	if got != 300 {
+		t.Errorf("score = %d; want 300", got)
+	}
+}
+
+func TestGetUserScore_TrustsPostgresWhenRedisDisagrees(t *testing.T) {
+	svc, pg, redis := newTestService(t)
+	pg.seed(leaderID, "alice", 300)
+	redis.seed(leaderID, "alice", 999) // a stale cache entry
+
+	got, err := svc.GetUserScore(ctx, leaderID, "alice")
+
+	if err != nil {
+		t.Fatalf("GetUserScore returned an error: %v", err)
+	}
+	if got != 300 {
+		t.Errorf("score = %d; want 300 (the value in PostgreSQL, the source of truth)", got)
+	}
+}
+
+func TestGetUserScore_UnknownUser_ReturnsNotFound(t *testing.T) {
+	svc, pg, _ := newTestService(t)
+	pg.seed(leaderID, "alice", 300)
+
+	_, err := svc.GetUserScore(ctx, leaderID, "ghost")
+
+	if code := domain.GetErrorCode(err); err == nil || code != 404 {
+		t.Errorf("error = %v (code %d); want a 404 error", err, code)
+	}
+}
+
+func TestGetUserScore_PostgresDown_ReturnsError(t *testing.T) {
+	svc, pg, _ := newTestService(t)
+	pg.err = errDBDown
+
+	if _, err := svc.GetUserScore(ctx, leaderID, "alice"); err == nil {
+		t.Error("GetUserScore returned no error although PostgreSQL is down")
+	}
+}
+
+// =============================================================================
+// CountPlayers
+// =============================================================================
+// Counted in PostgreSQL. Redis ZCARD would be faster, but it is only right when
+// the cache holds every player, and today nothing guarantees that (Phase 1b).
+
+func TestCountPlayers_CountsEveryPlayer(t *testing.T) {
+	svc, pg, redis := newTestService(t)
+	pg.seed(leaderID, "alice", 300)
+	pg.seed(leaderID, "bob", 200)
+	pg.seed(leaderID, "carol", 100)
+	redis.seed(leaderID, "alice", 300) // the cache only knows one of them
+
+	got, err := svc.CountPlayers(ctx, leaderID)
+
+	if err != nil {
+		t.Fatalf("CountPlayers returned an error: %v", err)
+	}
+	if got != 3 {
+		t.Errorf("player count = %d; want 3", got)
+	}
+}
+
+func TestCountPlayers_EmptyLeaderboardIsZero(t *testing.T) {
+	svc, _, _ := newTestService(t)
+
+	got, err := svc.CountPlayers(ctx, leaderID)
+
+	if err != nil {
+		t.Fatalf("CountPlayers returned an error: %v", err)
+	}
+	if got != 0 {
+		t.Errorf("player count = %d; want 0", got)
+	}
+}
+
+func TestCountPlayers_PostgresDown_ReturnsError(t *testing.T) {
+	svc, pg, _ := newTestService(t)
+	pg.err = errDBDown
+
+	if _, err := svc.CountPlayers(ctx, leaderID); err == nil {
+		t.Error("CountPlayers returned no error although PostgreSQL is down")
 	}
 }
 

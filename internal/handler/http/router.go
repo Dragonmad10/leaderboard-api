@@ -33,7 +33,9 @@ func SetupRouter(handler *LeaderboardHandler, rateLimiterMiddleware gin.HandlerF
 	router.POST("/api/v1/leaderboards/:id/scores", handler.SubmitScore)           // Submit absolute score
 	router.POST("/api/v1/leaderboards/:id/scores/increment", handler.IncrementScore) // Increment score by delta
 	router.GET("/api/v1/leaderboards/:id/scores", handler.GetTopScores)           // Get paginated top scores
+	router.GET("/api/v1/leaderboards/:id/scores/:user_id", handler.GetUserScore) // Get one user's score
 	router.GET("/api/v1/leaderboards/:id/rank", handler.GetRank)                  // Get user rank
+	router.GET("/api/v1/leaderboards/:id/stats", handler.GetStats)                // Leaderboard stats (player count)
 	router.DELETE("/api/v1/leaderboards/:id/scores/:user_id", handler.RemoveUserScore) // Remove user score
 
 	return router
